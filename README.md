@@ -30,8 +30,8 @@
 | 用途 | 常见路径 |
 |---|---|
 | 安装根目录 | `C:\Program Files\VisionMaster4.x.x\`，或例如 `D:\VisionMaster4.4.0\` |
-| 应用帮助 | `<安装根>\Applications\Help\CH\index.html` |
-| 引用导入工具 | `<安装根>\Development\V4.x\ComControls\Tool\ImportRef.exe` |
+| 应用帮助 | `<安装根>\Applications\Help\CH\index.html`，或同目录下的 CHM（如 `VisionMasterHelp.chm`）。以定位脚本列出的为准 |
+| 引用导入工具 | 定位脚本打印的 `ImportRef.exe`。有的版本没有这个工具，这时按脚本打印的程序集路径手动添加引用 |
 | 核心程序集 | `VM.Core.dll`、`VM.PlatformSDKCS.dll`，以及 WinForms / WPF 控件库 |
 
 也可以设置环境变量 `VM_SDK_DIR` 指向安装根目录或其中的 Development 目录。定位脚本会读它。
@@ -97,7 +97,7 @@ npx skills update SnowManTangchao/VM-Skill
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\find-vm-install.ps1
 ```
 
-脚本打印应用帮助、CHM 和程序集的候选路径。加上 `-Json` 可得到一段 JSON。安装不在默认位置时：
+脚本分开打印应用帮助（HTML 或 CHM）、SDK 开发指南、程序集、`ImportRef.exe` 和 `log4net.config` 的候选路径。加上 `-Json` 可得到一段 JSON。安装不在默认位置时：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\find-vm-install.ps1 -ExtraRoot "D:\VisionMaster4.4.0"
@@ -117,9 +117,18 @@ VM-Skill/
 │   ├── csharp-project-setup.md
 │   └── common-tasks.md      # 加载、运行、送图、取结果、绑定控件、回调
 ├── scripts/
-│   └── find-vm-install.ps1
+│   ├── find-vm-install.ps1  # 定位帮助、CHM 和程序集
+│   └── lookup-chm.ps1       # 在临时目录检索本机 CHM，结束即删
+├── tests/
+│   └── find-vm-install.tests.ps1
 ├── LICENSE                  # 本仓库原创文字与脚本的 MIT 许可
 └── NOTICE.md                # VisionMaster 官方软件与手册的版权边界
+```
+
+定位脚本的回归测试在 `tests/find-vm-install.tests.ps1`。它只用假目录，不包含官方手册：
+
+```powershell
+pwsh -NoProfile -File .\tests\find-vm-install.tests.ps1
 ```
 
 ## 版权
@@ -136,7 +145,7 @@ VM-Skill is an Agent Skill for Hikrobotics VisionMaster joint programming. It te
 npx skills add SnowManTangchao/VM-Skill
 ```
 
-The locator script searches common install folders and `VM_SDK_DIR`. It does not start VisionMaster:
+The locator script searches common install folders and `VM_SDK_DIR`. Application help may be HTML WebHelp or CHM. It does not start VisionMaster:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\find-vm-install.ps1

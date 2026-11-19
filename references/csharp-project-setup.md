@@ -43,43 +43,68 @@
 | WPF 控件 | 上面两个，加上 `VMControls.WPF.Release.dll` 及其依赖 |
 | 某个算法模块的强类型 Tool | 该模块自己的程序集，例如图像源、Blob、识别模块各自的 DLL |
 
-控件库通常还依赖 `VMControls.Interface.dll`、`VMControls.BaseInterface.dll`、`VMControls.RenderInterface.dll`。用导入工具添加，让它带上依赖。WinForms 和 WPF 的控件库不要同时加进一个只使用其中一种界面的工程。
+控件库通常还依赖 `VMControls.Interface.dll`、`VMControls.BaseInterface.dll`、`VMControls.RenderInterface.dll`。有导入工具时用它带上依赖；没有时按下一节把磁盘上存在的那些 DLL 手动加进来。WinForms 和 WPF 的控件库不要同时加进一个只使用其中一种界面的工程。
 
 命名空间以程序集为准。方案和流程的公开类型常见于 `VM.Core` 与 `VM.PlatformSDKCS`。具体模块的 Tool 类型在该模块程序集自己的命名空间里。
 
-## ImportRef
+## 添加程序集引用
 
-安装目录中的导入工具通常是：
+以定位脚本打印的路径为准。不要自己拼一条固定的 `ImportRef.exe` 或 DLL 路径。
 
-```text
-<InstallRoot>\Development\V4.x\ComControls\Tool\ImportRef.exe
-```
+### 脚本列出了 ImportRef.exe
 
-用法：
+`import-ref` 不是 `(none)` 时，用它打印的那一个文件。有的版本在 `Development\V4.x\ComControls\Tool\ImportRef.exe`，有的放在别的目录，有的安装里没有这个文件。
 
-1. 确认路径指向**这一套**安装，而不是另一边的旧版本。
-2. 启动 `ImportRef.exe`，选择包含 `.csproj` 的工程目录。
+1. 确认路径属于当前要用的这一套安装，而不是另一边的旧版本。
+2. 启动该 `ImportRef.exe`，选择包含 `.csproj` 的工程目录。
 3. 导入基础库，再只导入方案里真正用到的模块。
 4. 回到 Visual Studio 重新加载项目。
 5. 检查引用里有 `VM.Core` 和 `VM.PlatformSDKCS`，以及选中的模块和控件库。
 
 一个工程不要对两个 VM 版本各导一次。升级 VM 后，用新版本的导入工具重新导入，并清理输出目录里残留的旧 DLL。
 
+### 没有 ImportRef.exe
+
+`import-ref` 为 `(none)` 时，这一版没有该工具。按脚本 `assemblies` 里打印的完整路径，在 Visual Studio 里用「添加引用 → 浏览」手动加。开发组件可以是齐全的，只是没带导入工具。
+
+| 宿主需要 | 手动添加 |
+|---|---|
+| 只调用方案和流程 | 脚本列出的 `VM.Core.dll`、`VM.PlatformSDKCS.dll` |
+| WinForms 控件 | 再加上 `VMControls.Winform.Release.dll`，以及脚本列出的 `VMControls.Interface.dll` |
+| WPF 控件 | 再加上 `VMControls.WPF.Release.dll`，以及脚本列出的 `VMControls.Interface.dll` |
+
+控件库若还依赖同目录下的 `VMControls.BaseInterface.dll`、`VMControls.RenderInterface.dll`，而脚本没单独列出，到已列出的控件 DLL 所在目录查看，把磁盘上真实存在的依赖一并引用。
+
+旧式 csproj 用脚本打印的完整路径作为 `HintPath`，并关掉复制本地：
+
+```xml
+<Reference Include="VM.Core">
+  <HintPath>脚本打印的 VM.Core.dll 完整路径</HintPath>
+  <Private>False</Private>
+</Reference>
+```
+
+路径里有空格时，原样放进 `HintPath`。不要把这些 DLL 复制进业务仓库。
+
 ## 复制本地
 
-手动添加引用后，把这些 VM 程序集的「复制本地 / Copy Local」设为 **False**。这样生成目录不会再放进一份可能过期的副本，进程使用与本机安装配套的那一套。导入工具如果已经这么设置，就不要改回去。
+手动添加引用后，把这些 VM 程序集的「复制本地 / Copy Local」设为 **False**（csproj 里的 `Private` 为 `False`）。这样生成目录不会再放进一份可能过期的副本，进程使用与本机安装配套的那一套。导入工具如果已经这么设置，就不要改回去。
 
 运行的电脑上需要安装匹配版本的 VisionMaster，并且进程要能找到这些程序集和原生依赖。做法跟本机官方示例：环境变量、工作目录，或示例里的探测路径。不要把整棵 VM 安装目录复制进业务仓库。若本机指南要求把某几个原生文件放到 exe 旁边，只复制指南点名的那些文件。
 
 ## log4net.config
 
-有的版本会到可执行文件旁的固定相对路径查找 log4net 配置。公开资料里，缺文件时有的只是警告，有的会在初始化时失败。以本机示例为准。常见位置是：
+有的版本会到可执行文件旁的固定相对路径查找 log4net 配置。公开资料里，缺文件时有的只是警告，有的会在初始化时失败。配置文件的内容从定位脚本 `log4net-config` 打印的那一份读取。不要假设它一定在：
 
 ```text
 <InstallRoot>\Development\V4.x\ComControls\Assembly\3rdLib\Log4Net\log4net.config
 ```
 
-输出目录旁保持相同的相对路径，例如 `3rdLib\Log4Net\log4net.config`。文件名大小写以磁盘上的文件为准。示例工程如果用了别的相对路径，跟示例走。
+有的安装把这份文件放在 Development 树的更深处，磁盘上的文件名也可能是 `log4Net.config`。脚本按文件名查找，不区分大小写，并打印真实路径。
+
+输出目录旁的相对路径跟本机官方示例工程。不要把脚本找到的深层目录原样当成运行时相对路径，也不要在示例并不是 `3rdLib\Log4Net\` 时仍写死这条路径。在示例工程里搜索 `log4net.config`，用它的 `Content Include` 和 `Link`。
+
+只有示例也使用 `3rdLib\Log4Net\log4net.config` 时，才用下面这段：
 
 ```xml
 <Content Include="3rdLib\Log4Net\log4net.config">
@@ -88,7 +113,7 @@
 </Content>
 ```
 
-配置文件的内容从本机那一份复制到工程，不要自己另写一份替代品，也不要把这份第三方配置再发布到本技能仓库。
+列出多个配置文件时，用示例工程实际复制的那一份。脚本显示 `(none)` 时，仍然以示例工程为准。示例里也没有，就不要自己编一份替代配置。配置可以按示例放进用户的业务工程，不要把它再发布到本技能仓库。
 
 ## 工具箱
 

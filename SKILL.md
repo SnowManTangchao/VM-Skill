@@ -1,11 +1,11 @@
 ---
 name: vm-skill
-description: "Use when writing or reviewing a C# host for Hikrobotics VisionMaster (VM) joint programming (联合编程 / 二次开发). Covers the VM SDK: load a .sol solution, run VmProcedure, set ModuParams, read ModuResult, and embed render or parameter controls in WinForms or WPF. Trigger on VisionMaster, VM, VM SDK, VmSolution, C# host. Look up module parameters, defaults, ranges, and error codes in the local VM manuals."
+description: "Use when writing or reviewing a C# host for Hikrobotics VisionMaster (VM) joint programming (联合编程 / 二次开发). Covers the VM SDK: load a .sol solution, run VmProcedure, set ModuParams, read ModuResult, and embed render or parameter controls in WinForms or WPF. Trigger on VisionMaster, VM, VM SDK, VmSolution, C# host. Look up module parameters, defaults, ranges, and error codes in the local VM manuals. Application help may be HTML WebHelp or CHM."
 license: MIT
-compatibility: "Requires a local Windows VisionMaster install with application help and the SDK development components. This skill does not include those manuals."
+compatibility: "Requires a local Windows VisionMaster install with application help (HTML or CHM) and the SDK development components. This skill does not include those manuals."
 metadata:
   author: SnowManTangchao
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # VisionMaster 联合编程
@@ -38,12 +38,18 @@ metadata:
 - 错误码含义
 - 当前版本是否存在某个重载、事件或控件
 
-可以在 IDE 里对已引用的程序集使用转到定义。需要引用手册句子时，只摘当前问题用到的短句，并注明本机文件路径。不要把 CHM、PDF、WebHelp 解包或复制进本仓库，也不要复制进用户的业务仓库。
+应用帮助有两种布局，定位脚本会分开打印：
+
+- `app-help` / `html` 里有 `index.html`：用浏览器打开。优先 `Applications\Help\CH\index.html`，英文界面用 `Help\EN\index.html`。
+- `html` 为 `(none)` 且 `chm` 列出了 `.chm`：帮助已经安装，这一版用的是 CHM。按打印顺序打开。中文界面先开 `Applications\Help\CH\VisionMasterHelp.chm`，这份里没有该模块再开同目录的 `HIKVisionMasterHelp.chm`。英文界面用 `Help\EN` 下的同名文件。
+- 模块参数、默认值和取值范围查应用帮助。类、方法、事件和错误码查 `sdk-chm`，或对已引用程序集转到定义。
+
+可以在 IDE 里对已引用的程序集使用转到定义。需要引用手册句子时，只摘当前问题用到的短句，并注明本机文件路径。CHM 用 [本机安装与文档](references/local-docs.md) 里的 `scripts/lookup-chm.ps1` 在系统临时目录检索，结束即删。不要把 CHM、PDF、WebHelp 解包结果复制进本仓库，也不要复制进用户的业务仓库。
 
 ## 联合编程工作流
 
 1. 确认路线是 SDK 联合编程，并确认界面是 WinForms 还是 WPF。
-2. 定位安装根目录、应用帮助、SDK 开发指南 CHM，以及 Development 里的程序集。
+2. 定位安装根目录、应用帮助（HTML 或 CHM）、SDK 开发指南 CHM，以及 Development 里的程序集。`ImportRef.exe` 和 `log4net.config` 用脚本打印的路径。脚本没找到 `ImportRef.exe` 时，按工程配置文档用那些程序集路径手动添加引用。
 3. 检查现有 `.csproj` 的目标框架、平台和引用。缺引用时按 [C# 工程配置](references/csharp-project-setup.md) 处理。
 4. 核对方案里的真实名称：流程名、模块名、图像入口、要读的结果名。索引字符串必须与 `.sol` 里的名称完全一致。方案不在工作区时，向用户要这些名称，不要自己编。
 5. 按 [对象模型](references/object-model.md) 组织调用：加载方案，取出流程或模块，设置只对下一次运行有效的输入，运行，然后重新取得结果。只有用户要求保存方案时才写入 `.sol`。
@@ -64,7 +70,7 @@ metadata:
 ## 编写约束
 
 - 沿用用户工程已有的 UI 框架、命名和项目风格。
-- 程序集从本机 Development 目录引用。用安装目录里的 `ImportRef.exe`，或按本机指南手动添加。不要把海康 DLL、示例方案或许可证提交进本技能仓库。
+- 程序集从本机 Development 目录引用。定位脚本列出 `import-ref` 时用那个工具；输出为 `(none)` 时，按 [C# 工程配置](references/csharp-project-setup.md) 用脚本打印的程序集路径手动添加引用。不要把海康 DLL、示例方案或许可证提交进本技能仓库。
 - 宿主目标框架使用 .NET Framework 4.6.1 或本机指南写明的更高 Framework 版本。不要把工程改成 .NET Core 或 .NET 5 及以上，除非该版本的 SDK 指南写明支持。
 - 平台使用 64 位。AnyCPU 时不要勾选「首选 32 位」。需要写死时用 x64，并在本机文档里确认。
 - 程序退出前释放方案和控件。不要在终结器里调用 SDK。

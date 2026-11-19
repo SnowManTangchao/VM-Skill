@@ -7,6 +7,14 @@
     fixed drives. Does not start VisionMaster and does not check a license.
     Official manuals stay on this machine; this script only prints paths.
 
+    Application help may be HTML WebHelp (index.html) or CHM files under
+    Applications\Help. SDK development guides are reported separately.
+    ImportRef.exe and log4net.config are discovered under Development;
+    a missing ImportRef.exe is not treated as a broken help install.
+
+    Registry discovery reads InstallLocation, InstallPath, and DisplayIcon.
+    Some installs leave InstallLocation empty and store the root in InstallPath.
+
 .PARAMETER ExtraRoot
     An install root, or any directory inside one. Also accepts a path that
     is not in the default search locations.
@@ -34,6 +42,7 @@ try {
 
 $script:Searched = New-Object System.Collections.Generic.List[string]
 $script:Notes = New-Object System.Collections.Generic.List[string]
+$script:VmInstallExitCode = 1
 
 function Add-Note {
     param([string]$Text)
@@ -77,7 +86,96 @@ function Test-Directory {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return $false
     }
-    return (Test-Path -LiteralPath $Path -PathType Container)
+    try {
+        return (Test-Path -LiteralPath $Path -PathType Container -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+}
+
+function Test-File {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+    try {
+        return (Test-Path -LiteralPath $Path -PathType Leaf -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+}
+
+function Get-VmHelpSortKey {
+    param([string]$Path)
+    $normalized = ($Path -replace '/', '\').ToLowerInvariant()
+    $marker = '\applications\help\'
+    $rest = $normalized
+    $markerIndex = $normalized.IndexOf($marker)
+    if ($markerIndex -ge 0) {
+        $rest = $normalized.Substring($markerIndex + $marker.Length)
+    }
+    $parts = @($rest -split '\\' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $language = ''
+    if ($parts.Count -ge 2) {
+        $language = [string]$parts[0]
+    }
+    $languageRank = 9
+    if ($language -eq 'ch') {
+        $languageRank = 0
+    } elseif ($language -eq 'en') {
+        $languageRank = 1
+    }
+    $leaf = ''
+    if ($parts.Count -gt 0) {
+        $leaf = [string]$parts[$parts.Count - 1]
+    }
+    $nameRank = 9
+    if ($leaf -eq 'index.html') {
+        $nameRank = 0
+    } elseif ($leaf -eq 'visionmasterhelp.chm') {
+        $nameRank = 1
+    } elseif ($leaf -eq 'hikvisionmasterhelp.chm') {
+        $nameRank = 2
+    }
+    return ('{0:D2}-{1:D2}-{2}' -f $languageRank, $nameRank, $rest)
+}
+
+function Sort-VmHelpPaths {
+    param([string[]]$Paths)
+    $items = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($items.Count -eq 0) {
+        return
+    }
+    $items | Sort-Object { Get-VmHelpSortKey $_ } | ForEach-Object { $_ }
+}
+
+function Test-AppHelpMarker {
+    param([string]$Path)
+    foreach ($relative in @(
+            'Applications/Help/CH/index.html',
+            'Applications/Help/EN/index.html',
+            'Applications/Help/index.html'
+        )) {
+        if (Test-File (Join-VmPath $Path $relative)) {
+            return $true
+        }
+    }
+    foreach ($relative in @('Applications/Help/CH', 'Applications/Help/EN', 'Applications/Help')) {
+        $dir = Join-VmPath $Path $relative
+        if (-not (Test-Directory $dir)) {
+            continue
+        }
+        $chmFiles = @()
+        try {
+            $chmFiles = @(Get-ChildItem -LiteralPath $dir -Filter '*.chm' -File -ErrorAction SilentlyContinue)
+        } catch {
+            $chmFiles = @()
+        }
+        if ($chmFiles.Count -gt 0) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Test-VmRoot {
@@ -88,8 +186,7 @@ function Test-VmRoot {
     $name = Split-Path -Leaf $Path
     $hasApplications = Test-Directory (Join-VmPath $Path 'Applications')
     $hasDevelopment = Test-Directory (Join-VmPath $Path 'Development')
-    $hasChineseHelp = Test-Path -LiteralPath (Join-VmPath $Path 'Applications/Help/CH/index.html')
-    if ($hasChineseHelp) {
+    if (Test-AppHelpMarker $Path) {
         return $true
     }
     if ($hasApplications -and $hasDevelopment) {
@@ -159,42 +256,79 @@ function Add-DriveFolders {
     }
 }
 
+function Get-RegistryInstallHints {
+    param($Item)
+    $hints = New-Object System.Collections.Generic.List[string]
+    foreach ($propertyName in @('InstallLocation', 'InstallPath')) {
+        $value = [string]$Item.$propertyName
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $hints.Add($value.Trim().Trim('"').Trim("'"))
+        }
+    }
+    if ($Item.DisplayIcon) {
+        $icon = ([string]$Item.DisplayIcon).Split(',')[0].Trim().Trim('"').Trim("'")
+        if (-not [string]::IsNullOrWhiteSpace($icon)) {
+            try {
+                $parent = Split-Path -Parent $icon
+            } catch {
+                $parent = $null
+            }
+            if (-not [string]::IsNullOrWhiteSpace($parent)) {
+                $hints.Add($parent)
+            }
+        }
+    }
+    return @($hints.ToArray())
+}
+
+function Add-UninstallCandidates {
+    param(
+        $Item,
+        [System.Collections.Generic.List[string]]$Target
+    )
+    $displayName = [string]$Item.DisplayName
+    if ($displayName -notmatch 'VisionMaster') {
+        return
+    }
+    foreach ($hint in @(Get-RegistryInstallHints -Item $Item)) {
+        Add-CandidatePath -Target $Target -Path $hint
+    }
+}
+
 function Get-UninstallRoots {
+    param([object[]]$Items)
     $roots = New-Object System.Collections.Generic.List[string]
+    $searched = 'Uninstall registry (DisplayName contains VisionMaster; InstallLocation, InstallPath, DisplayIcon)'
+    if ($PSBoundParameters.ContainsKey('Items')) {
+        foreach ($item in @($Items)) {
+            if ($null -eq $item) {
+                continue
+            }
+            Add-UninstallCandidates -Item $item -Target $roots
+        }
+        $script:Searched.Add($searched)
+        return $roots
+    }
+
     $keys = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
     )
     $sawRegistry = $false
     foreach ($key in $keys) {
-        $items = @()
+        $entries = @()
         try {
-            $items = @(Get-ItemProperty -Path $key -ErrorAction Stop)
+            $entries = @(Get-ItemProperty -Path $key -ErrorAction Stop)
             $sawRegistry = $true
         } catch {
             continue
         }
-        foreach ($item in $items) {
-            $displayName = [string]$item.DisplayName
-            if ($displayName -notmatch 'VisionMaster') {
-                continue
-            }
-            $location = [string]$item.InstallLocation
-            if ([string]::IsNullOrWhiteSpace($location) -and $item.DisplayIcon) {
-                $icon = ([string]$item.DisplayIcon).Split(',')[0].Trim().Trim('"')
-                if (-not [string]::IsNullOrWhiteSpace($icon)) {
-                    try {
-                        $location = Split-Path -Parent $icon
-                    } catch {
-                        $location = $null
-                    }
-                }
-            }
-            Add-CandidatePath -Target $roots -Path $location
+        foreach ($entry in $entries) {
+            Add-UninstallCandidates -Item $entry -Target $roots
         }
     }
     if ($sawRegistry) {
-        $script:Searched.Add('Uninstall registry (DisplayName contains VisionMaster)')
+        $script:Searched.Add($searched)
     } else {
         $script:Searched.Add('Uninstall registry unavailable on this host')
     }
@@ -280,22 +414,6 @@ function Find-Files {
     return @($found.ToArray())
 }
 
-function Resolve-Existing {
-    param([string]$Root, [string[]]$RelativePaths)
-    $existing = New-Object System.Collections.Generic.List[string]
-    foreach ($relative in @($RelativePaths)) {
-        $path = Join-VmPath $Root $relative
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            try {
-                $existing.Add([System.IO.Path]::GetFullPath($path))
-            } catch {
-                $existing.Add($path)
-            }
-        }
-    }
-    return @($existing.ToArray())
-}
-
 function Get-AssemblyMap {
     param([string]$DevelopmentRoot)
     $names = @(
@@ -322,14 +440,53 @@ function Get-AssemblyMap {
     return ,$map
 }
 
+function Get-AppHelp {
+    param([string]$Root)
+    $html = New-Object System.Collections.Generic.List[string]
+    $chm = New-Object System.Collections.Generic.List[string]
+    $helpRoot = Join-VmPath $Root 'Applications/Help'
+    if (Test-Directory $helpRoot) {
+        $rootIndex = Join-Path $helpRoot 'index.html'
+        if (Test-File $rootIndex) {
+            try {
+                $html.Add([System.IO.Path]::GetFullPath($rootIndex))
+            } catch {
+                $html.Add($rootIndex)
+            }
+        }
+        $languageDirs = @()
+        try {
+            $languageDirs = @(Get-ChildItem -LiteralPath $helpRoot -Directory -ErrorAction SilentlyContinue)
+        } catch {
+            $languageDirs = @()
+        }
+        foreach ($dir in $languageDirs) {
+            $index = Join-Path $dir.FullName 'index.html'
+            if (Test-File $index) {
+                try {
+                    $html.Add([System.IO.Path]::GetFullPath($index))
+                } catch {
+                    $html.Add($index)
+                }
+            }
+        }
+        foreach ($file in @(Find-Files -Root $helpRoot -Suffix '.chm' -MaxDepth 2 -Limit 30)) {
+            if (-not [string]::IsNullOrWhiteSpace($file)) {
+                $chm.Add($file)
+            }
+        }
+    }
+    $result = [ordered]@{
+        html = @(Sort-VmHelpPaths @($html.ToArray()))
+        chm  = @(Sort-VmHelpPaths @($chm.ToArray()))
+    }
+    return ,$result
+}
+
 function New-Candidate {
     param([string]$Root)
     $development = Join-VmPath $Root 'Development'
-    $appHelp = @(Resolve-Existing -Root $Root -RelativePaths @(
-            'Applications/Help/CH/index.html',
-            'Applications/Help/EN/index.html',
-            'Applications/Help/index.html'
-        ))
+    $appHelp = Get-AppHelp -Root $Root
     $chmRoots = New-Object System.Collections.Generic.List[string]
     foreach ($relative in @('Development', 'Documentation', 'Document', 'Doc')) {
         $path = Join-VmPath $Root $relative
@@ -352,13 +509,18 @@ function New-Candidate {
         }
     }
     $assemblies = Get-AssemblyMap -DevelopmentRoot $development
-    $importRef = @(Find-Files -Root $development -ExactNames @('ImportRef.exe') -MaxDepth 7 -Limit 10)
-    $log4net = @(Find-Files -Root $development -ExactNames @('log4net.config') -MaxDepth 8 -Limit 10)
+    $importRef = @(Find-Files -Root $development -ExactNames @('ImportRef.exe') -MaxDepth 12 -Limit 20)
+    # File name match is case-insensitive, so log4Net.config is included.
+    $log4net = @(Find-Files -Root $development -ExactNames @('log4net.config') -MaxDepth 12 -Limit 20)
 
     $coreCount = @($assemblies['VM.Core.dll']).Count
     $sdkCount = @($assemblies['VM.PlatformSDKCS.dll']).Count
-    if ($appHelp.Count -eq 0) {
-        Add-Note ($Root + ': application help index was not found. Install or repair the help component.')
+    $htmlCount = @($appHelp.html | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    $appChmCount = @($appHelp.chm | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    if ($htmlCount -eq 0 -and $appChmCount -eq 0) {
+        Add-Note ($Root + ': application help was not found under Applications\Help (no index.html and no CHM). Install or repair the help component.')
+    } elseif ($htmlCount -eq 0 -and $appChmCount -gt 0) {
+        Add-Note ($Root + ': application help is installed as CHM under Applications\Help. Use the app-help chm paths for module parameters, defaults, and ranges.')
     }
     if ($chm.Count -eq 0) {
         Add-Note ($Root + ': no SDK CHM was found under Development or Documentation. Confirm the development guide is installed.')
@@ -366,10 +528,13 @@ function New-Candidate {
     if ($coreCount -eq 0 -or $sdkCount -eq 0) {
         Add-Note ($Root + ': VM.Core.dll or VM.PlatformSDKCS.dll was not found. Confirm the development assemblies are installed.')
     }
+    if (@($importRef | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -eq 0) {
+        Add-Note ($Root + ': ImportRef.exe was not found under Development. Add SDK references manually from the assembly paths in this report.')
+    }
 
     $candidate = [ordered]@{
         installRoot   = $Root
-        appHelp       = @($appHelp)
+        appHelp       = $appHelp
         sdkChm        = @($chm.ToArray())
         assemblies    = $assemblies
         importRef     = @($importRef)
@@ -379,6 +544,7 @@ function New-Candidate {
 }
 
 function Get-Candidates {
+    param([string]$ExtraRoot)
     $roots = New-Object System.Collections.Generic.List[string]
 
     $sdkDir = [Environment]::GetEnvironmentVariable('VM_SDK_DIR')
@@ -429,88 +595,104 @@ function Get-Candidates {
     return @($candidates)
 }
 
-$candidates = @(Get-Candidates)
-$found = $false
-foreach ($candidate in @($candidates)) {
-    if ($null -ne $candidate -and -not [string]::IsNullOrWhiteSpace($candidate.installRoot)) {
-        $found = $true
-        break
+function Write-PathList {
+    param(
+        [string]$Indent,
+        $Paths
+    )
+    $items = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($items.Count -eq 0) {
+        Write-Output ($Indent + '(none)')
+        return
+    }
+    foreach ($path in $items) {
+        Write-Output ($Indent + $path)
     }
 }
 
-$payload = [ordered]@{
-    found      = $found
-    candidates = @($candidates | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace($_.installRoot) })
-    searched   = @($script:Searched.ToArray())
-    notes      = @($script:Notes.ToArray())
-}
+function Invoke-FindVmInstall {
+    param(
+        [string]$ExtraRoot,
+        [switch]$Json
+    )
+    $script:Searched = New-Object System.Collections.Generic.List[string]
+    $script:Notes = New-Object System.Collections.Generic.List[string]
 
-if ($Json) {
-    $payload | ConvertTo-Json -Depth 6
-} elseif ($found) {
-    Write-Output ('找到 {0} 个 VisionMaster 安装目录。下面是候选路径。手册留在本机，不要复制进仓库。' -f @($payload.candidates).Count)
-    Write-Output ''
-    $index = 1
-    foreach ($candidate in @($payload.candidates)) {
-        Write-Output ('[{0}] {1}' -f $index, $candidate.installRoot)
-        Write-Output '    app-help:'
-        if (@($candidate.appHelp).Count -eq 0) {
-            Write-Output '      (none)'
-        } else {
-            foreach ($path in @($candidate.appHelp)) { Write-Output ('      ' + $path) }
+    $candidates = @(Get-Candidates -ExtraRoot $ExtraRoot)
+    $found = $false
+    foreach ($candidate in @($candidates)) {
+        if ($null -ne $candidate -and -not [string]::IsNullOrWhiteSpace($candidate.installRoot)) {
+            $found = $true
+            break
         }
-        Write-Output '    sdk-chm:'
-        if (@($candidate.sdkChm).Count -eq 0) {
-            Write-Output '      (none)'
-        } else {
-            foreach ($path in @($candidate.sdkChm)) { Write-Output ('      ' + $path) }
-        }
-        Write-Output '    assemblies:'
-        foreach ($name in @($candidate.assemblies.Keys)) {
-            $hits = @($candidate.assemblies[$name])
-            if ($hits.Count -eq 0) {
-                Write-Output ('      {0}: (none)' -f $name)
-            } else {
-                foreach ($path in $hits) {
-                    Write-Output ('      {0}: {1}' -f $name, $path)
+    }
+
+    $payload = [ordered]@{
+        found      = $found
+        candidates = @($candidates | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace($_.installRoot) })
+        searched   = @($script:Searched.ToArray())
+        notes      = @($script:Notes.ToArray())
+    }
+
+    $script:VmInstallExitCode = 1
+    if ($found) {
+        $script:VmInstallExitCode = 0
+    }
+
+    if ($Json) {
+        $payload | ConvertTo-Json -Depth 8
+    } elseif ($found) {
+        Write-Output ('找到 {0} 个 VisionMaster 安装目录。下面是候选路径。手册留在本机，不要复制进仓库。' -f @($payload.candidates).Count)
+        Write-Output ''
+        $index = 1
+        foreach ($candidate in @($payload.candidates)) {
+            Write-Output ('[{0}] {1}' -f $index, $candidate.installRoot)
+            Write-Output '    app-help:'
+            Write-Output '      html:'
+            Write-PathList -Indent '        ' -Paths $candidate.appHelp.html
+            Write-Output '      chm:'
+            Write-PathList -Indent '        ' -Paths $candidate.appHelp.chm
+            Write-Output '    sdk-chm:'
+            Write-PathList -Indent '      ' -Paths $candidate.sdkChm
+            Write-Output '    assemblies:'
+            foreach ($name in @($candidate.assemblies.Keys)) {
+                $hits = @($candidate.assemblies[$name] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if ($hits.Count -eq 0) {
+                    Write-Output ('      {0}: (none)' -f $name)
+                } else {
+                    foreach ($path in $hits) {
+                        Write-Output ('      {0}: {1}' -f $name, $path)
+                    }
                 }
             }
+            Write-Output '    import-ref:'
+            Write-PathList -Indent '      ' -Paths $candidate.importRef
+            Write-Output '    log4net-config:'
+            Write-PathList -Indent '      ' -Paths $candidate.log4netConfig
+            Write-Output ''
+            $index++
         }
-        Write-Output '    import-ref:'
-        if (@($candidate.importRef).Count -eq 0) {
-            Write-Output '      (none)'
-        } else {
-            foreach ($path in @($candidate.importRef)) { Write-Output ('      ' + $path) }
+        if (@($payload.notes).Count -gt 0) {
+            Write-Output 'notes:'
+            foreach ($note in @($payload.notes)) { Write-Output ('  - ' + $note) }
         }
-        Write-Output '    log4net-config:'
-        if (@($candidate.log4netConfig).Count -eq 0) {
-            Write-Output '      (none)'
-        } else {
-            foreach ($path in @($candidate.log4netConfig)) { Write-Output ('      ' + $path) }
+    } else {
+        Write-Output '没有找到 VisionMaster 安装目录。'
+        Write-Output 'No VisionMaster installation was found.'
+        Write-Output ''
+        Write-Output 'Searched:'
+        foreach ($item in @($payload.searched)) { Write-Output ('  - ' + $item) }
+        if (@($payload.notes).Count -gt 0) {
+            Write-Output 'Notes:'
+            foreach ($note in @($payload.notes)) { Write-Output ('  - ' + $note) }
         }
         Write-Output ''
-        $index++
+        Write-Output 'Install VisionMaster with the application help and development components, set VM_SDK_DIR, or pass -ExtraRoot <InstallRoot>.'
+        Write-Output 'This script only looks for files. It does not start VisionMaster and it does not check a license.'
     }
-    if (@($payload.notes).Count -gt 0) {
-        Write-Output 'notes:'
-        foreach ($note in @($payload.notes)) { Write-Output ('  - ' + $note) }
-    }
-} else {
-    Write-Output '没有找到 VisionMaster 安装目录。'
-    Write-Output 'No VisionMaster installation was found.'
-    Write-Output ''
-    Write-Output 'Searched:'
-    foreach ($item in @($payload.searched)) { Write-Output ('  - ' + $item) }
-    if (@($payload.notes).Count -gt 0) {
-        Write-Output 'Notes:'
-        foreach ($note in @($payload.notes)) { Write-Output ('  - ' + $note) }
-    }
-    Write-Output ''
-    Write-Output 'Install VisionMaster with the application help and development components, set VM_SDK_DIR, or pass -ExtraRoot <InstallRoot>.'
-    Write-Output 'This script only looks for files. It does not start VisionMaster and it does not check a license.'
 }
 
-if ($found) {
-    exit 0
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-FindVmInstall -ExtraRoot $ExtraRoot -Json:$Json
+    exit $script:VmInstallExitCode
 }
-exit 1
